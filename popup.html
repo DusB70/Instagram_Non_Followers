@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>IG Non-Followers Pro</title>
+  </head>
+  <body data-theme="light">
+    <div class="container">
+      <header>
+        <h1>IG Non-Followers Pro</h1>
+        <div class="header-actions">
+          <button
+            id="whitelist-manager-btn"
+            class="icon-btn"
+            title="Whitelist Manager"
+          >
+            ⭐
+          </button>
+          <button id="theme-toggle" class="icon-btn" title="Toggle Dark Mode">
+            🌙
+          </button>
+        </div>
+      </header>
+
+      <div class="info">
+        <p>1. Open your Instagram profile page</p>
+        <p>2. Click scan to find non-followers</p>
+      </div>
+
+      <div class="safe-mode-container">
+        <label class="safe-mode-toggle">
+          <input type="checkbox" id="safe-mode-toggle" checked />
+          <span class="toggle-slider"></span>
+          <span class="toggle-label">🛡️ Safe Mode</span>
+        </label>
+        <div class="safe-mode-info">
+          <small>Limits: 50 unfollows/session, auto-pauses on warnings</small>
+        </div>
+      </div>
+
+      <button id="btn" class="scan-btn">🔍 Scan Non-Followers</button>
+
+      <div id="status" class="status">Ready to scan</div>
+      <div id="last-scan-info" class="last-scan-info" style="display: none">
+        <span id="last-scan-text"></span>
+        <button id="clear-scan-btn" class="clear-btn">✕ Clear</button>
+      </div>
+      <div id="progress" class="progress"></div>
+
+      <!-- Filters with Sorting (Removed followed options) -->
+      <div class="filters-container" style="display: none">
+        <button id="toggle-filters" class="toggle-filters-btn">
+          🔍 Filters & Sort
+        </button>
+        <div id="filters-panel" class="filters-panel" style="display: none">
+          <div class="filter-group">
+            <label>🔤 Sort by:</label>
+            <select id="sort-filter">
+              <option value="default">Default</option>
+              <option value="username-asc">Username (A-Z)</option>
+              <option value="username-desc">Username (Z-A)</option>
+              <option value="name-asc">Name (A-Z)</option>
+              <option value="name-desc">Name (Z-A)</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label>🔍 Search username:</label>
+            <input
+              type="text"
+              id="search-filter"
+              placeholder="Search username..."
+            />
+          </div>
+          <button id="reset-filters" class="reset-filters-btn">
+            Reset All
+          </button>
+        </div>
+      </div>
+
+      <div class="results-header" style="display: none">
+        <div class="stats" id="stats"></div>
+        <div class="controls">
+          <button id="select-all" class="control-btn">Select All</button>
+          <button id="deselect-all" class="control-btn">Deselect All</button>
+        </div>
+      </div>
+
+      <div id="list" class="list"></div>
+
+      <div class="bulk-actions" style="display: none">
+        <div id="selected-count" class="selected-count">Selected: 0 users</div>
+        <div
+          id="unfollow-counter"
+          class="unfollow-counter"
+          style="display: none"
+        >
+          Unfollowed this session: <strong>0</strong> /
+          <strong id="session-limit">50</strong>
+        </div>
+        <button id="unfollow-selected" class="unfollow-btn" disabled>
+          🚫 Unfollow Selected (0)
+        </button>
+        <div
+          id="unfollow-progress"
+          class="unfollow-progress"
+          style="display: none"
+        >
+          Unfollowing: <strong id="unfollow-current">0</strong> /
+          <strong id="unfollow-total">0</strong>
+        </div>
+        <div class="warning" id="warning-message">
+          ⚠️ Safe Mode: Max 50 unfollows per session
+        </div>
+      </div>
+    </div>
+
+    <div id="user-preview" class="user-preview" style="display: none">
+      <div class="preview-loading">Loading...</div>
+    </div>
+
+    <div id="whitelist-modal" class="modal" style="display: none">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>⭐ Whitelist Manager</h2>
+          <button class="close-modal">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="whitelist-info">
+            <p>Whitelisted users won't appear in non-followers list</p>
+            <div class="backup-settings">
+              <div class="backup-toggle-container">
+                <span class="backup-toggle-label">💾 Auto-backup to PC</span>
+                <label class="backup-toggle">
+                  <input type="checkbox" id="auto-backup-toggle" />
+                  <span class="backup-toggle-slider"></span>
+                </label>
+              </div>
+              <small>Creates a single rolling backup file in Downloads</small>
+            </div>
+          </div>
+
+          <div class="whitelist-actions">
+            <button id="export-whitelist" class="action-btn">📥 Export</button>
+            <button id="import-whitelist" class="action-btn">📤 Import</button>
+            <input
+              type="file"
+              id="import-file"
+              accept=".json"
+              style="display: none"
+            />
+          </div>
+
+          <div class="whitelist-stats">
+            <strong>Current Account:</strong>
+            <span id="current-user-id">Loading...</span><br />
+            <strong>Whitelisted:</strong>
+            <span id="whitelist-count">0</span> users
+          </div>
+
+          <div class="whitelist-list" id="whitelist-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

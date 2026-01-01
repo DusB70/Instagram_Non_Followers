@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "IG Non-Followers Pro",
+  "version": "2.1",
+  "description": "Advanced Instagram non-followers manager with whitelist, filters, and smart features",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "downloads",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://www.instagram.com/*",
+    "https://*.cdninstagram.com/*",
+    "https://*.fbcdn.net/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+     "default_icon": {
+      "16": "assets/icon16.png",
+      "48": "assets/icon48.png",
+      "128": "assets/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "assets/icon16.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["pageScript.js", "unfollowScript.js", "previewScript.js"],
+      "matches": ["https://www.instagram.com/*"]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.instagram.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ]
+}
