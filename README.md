@@ -79,7 +79,7 @@
 
    ```bash
    git clone https://github.com/yourusername/ig-nonfollowers-pro.git
-   cd ig-nonfollowers-pro
+   cd Instagram_Non_Followers
    ```
 
 2. **Open Chrome Extensions Page**
@@ -358,7 +358,7 @@ const REQUEST_DELAY = 1000; // 1 second between requests
 ```bash
 # Clone repository
 git clone https://github.com/DusB70/Instagram_Non_Followers.git
-cd ig-nonfollowers-pro
+cd Instagram_Non_Followers
 
 # No build step required - pure vanilla JS
 ```
@@ -536,7 +536,7 @@ Contributions are welcome! Please follow these guidelines:
 ```bash
 # Fork and clone
 git clone https://github.com/yourfork/Instagram_Non_Followers.git
-cd ig-nonfollowers-pro
+cd Instagram_Non_Followers
 
 # Create feature branch
 git checkout -b feature/your-feature-name
