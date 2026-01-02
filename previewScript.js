@@ -1,6 +1,14 @@
 (function () {
   console.log("[IG Preview] Script loaded");
 
+  // Rate limiting and caching
+  const previewCache = new Map();
+  const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+  let requestQueue = [];
+  let isProcessing = false;
+  let lastRequestTime = 0;
+  const MIN_REQUEST_DELAY = 2000; // 2 seconds between requests
+
   // Listen for current user ID request
   window.addEventListener("GET_CURRENT_USER_ID", async () => {
     try {
@@ -31,39 +39,104 @@
   // Listen for user preview request
   window.addEventListener("GET_USER_PREVIEW", async (e) => {
     const { username } = e.detail;
+    console.log(`[IG Preview] Received preview request for @${username}`);
+
+    // Check cache first
+    const cached = previewCache.get(username);
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+      console.log(`[IG Preview] Returning cached data for @${username}`);
+      window.dispatchEvent(
+        new CustomEvent("USER_PREVIEW_RESPONSE", {
+          detail: {
+            username: username,
+            success: true,
+            data: cached.data,
+            cached: true,
+          },
+        })
+      );
+      return;
+    }
+
+    // Add to queue
+    requestQueue.push(username);
+    processQueue();
+  });
+
+  async function processQueue() {
+    if (isProcessing || requestQueue.length === 0) return;
+
+    isProcessing = true;
+    const username = requestQueue.shift();
 
     try {
-      console.log(`[IG Preview] Fetching preview for @${username}`);
+      // Enforce rate limiting
+      const timeSinceLastRequest = Date.now() - lastRequestTime;
+      if (timeSinceLastRequest < MIN_REQUEST_DELAY) {
+        const delay = MIN_REQUEST_DELAY - timeSinceLastRequest;
+        console.log(`[IG Preview] Rate limiting: waiting ${delay}ms`);
+        await sleep(delay);
+      }
 
+      console.log(`[IG Preview] Fetching preview for @${username}`);
       const userData = await fetchUserData(username);
 
-      if (userData) {
+      if (userData && userData.user) {
+        console.log(`[IG Preview] Successfully fetched data for @${username}`);
+
+        // Cache the result
+        previewCache.set(username, {
+          data: userData,
+          timestamp: Date.now(),
+        });
+
         window.dispatchEvent(
           new CustomEvent("USER_PREVIEW_RESPONSE", {
             detail: {
+              username: username,
               success: true,
               data: userData,
+              cached: false,
             },
           })
         );
       } else {
-        throw new Error("Failed to fetch user data");
+        throw new Error("No user data returned");
       }
     } catch (error) {
       console.error(
         `[IG Preview] Error fetching preview for @${username}:`,
         error
       );
+
+      let errorMessage = "Failed to fetch user data";
+      if (error.message.includes("429")) {
+        errorMessage = "Rate limited - please wait a moment";
+      } else if (error.message.includes("404")) {
+        errorMessage = "User not found";
+      } else if (error.message.includes("CSRF")) {
+        errorMessage = "Session expired - refresh Instagram";
+      }
+
       window.dispatchEvent(
         new CustomEvent("USER_PREVIEW_RESPONSE", {
           detail: {
+            username: username,
             success: false,
-            error: error.message,
+            error: errorMessage,
           },
         })
       );
+    } finally {
+      lastRequestTime = Date.now();
+      isProcessing = false;
+
+      // Process next in queue after delay
+      if (requestQueue.length > 0) {
+        setTimeout(() => processQueue(), MIN_REQUEST_DELAY);
+      }
     }
-  });
+  }
 
   // Get current user ID from page
   function getCurrentUserId() {
@@ -128,11 +201,16 @@
   // Fetch user data from Instagram API
   async function fetchUserData(username) {
     try {
+      console.log(`[IG Preview] Fetching data for @${username}`);
+
       // Get CSRF token
       const csrfToken = getCsrfToken();
       if (!csrfToken) {
-        throw new Error("CSRF token not found");
+        console.error("[IG Preview] CSRF token not found");
+        throw new Error("CSRF token not found - please refresh Instagram page");
       }
+
+      console.log(`[IG Preview] CSRF token found, making API request`);
 
       // Fetch user profile info
       const response = await fetch(
@@ -150,14 +228,22 @@
         }
       );
 
+      console.log(`[IG Preview] API response status:`, response.status);
+
+      if (response.status === 429) {
+        throw new Error("HTTP 429 - Rate limited");
+      }
+
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new Error(`HTTP ${response.status} - ${response.statusText}`);
       }
 
       const data = await response.json();
+      console.log(`[IG Preview] API response data:`, data);
 
       if (!data.data || !data.data.user) {
-        throw new Error("Invalid response data");
+        console.error("[IG Preview] Invalid response structure:", data);
+        throw new Error("Invalid response data - user not found");
       }
 
       const user = data.data.user;
@@ -177,6 +263,8 @@
           });
         });
       }
+
+      console.log(`[IG Preview] Successfully parsed data for @${username}`);
 
       return {
         user: {
@@ -201,8 +289,15 @@
 
   // Get CSRF token from cookies
   function getCsrfToken() {
-    return document.cookie.match(/csrftoken=([^;]+)/)?.[1];
+    const match = document.cookie.match(/csrftoken=([^;]+)/);
+    const token = match?.[1];
+    console.log("[IG Preview] CSRF token:", token ? "found" : "not found");
+    return token;
   }
 
-  console.log("[IG Preview] Ready");
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  console.log("[IG Preview] Ready and listening for preview requests");
 })();

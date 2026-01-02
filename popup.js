@@ -621,20 +621,32 @@ document.addEventListener("DOMContentLoaded", function () {
           active: true,
           currentWindow: true,
         });
+
         const response = await chrome.tabs.sendMessage(tab.id, {
           type: "GET_USER_PREVIEW",
           username: username,
         });
 
-        if (response && response.success) {
+        if (response && response.success && response.data) {
           displayUserPreview(response.data);
         } else {
-          userPreview.innerHTML =
-            '<div class="preview-loading">Failed to load</div>';
+          // Show specific error message
+          const errorMsg = response?.error || "Failed to load preview";
+          userPreview.innerHTML = `<div class="preview-loading preview-error">${errorMsg}</div>`;
+
+          // Hide after longer delay for rate limit messages
+          const hideDelay = errorMsg.includes("Rate limited") ? 3000 : 2000;
+          setTimeout(() => {
+            userPreview.style.display = "none";
+          }, hideDelay);
         }
       } catch (error) {
         console.error("Preview error:", error);
-        userPreview.style.display = "none";
+        userPreview.innerHTML =
+          '<div class="preview-loading preview-error">Error loading preview</div>';
+        setTimeout(() => {
+          userPreview.style.display = "none";
+        }, 2000);
       }
     }, 500);
   }
@@ -645,6 +657,16 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   function displayUserPreview(data) {
+    // ← FIX: Add validation
+    if (!data || !data.user) {
+      console.error("[Popup] Invalid preview data:", data);
+      userPreview.innerHTML = '<div class="preview-loading">Invalid data</div>';
+      setTimeout(() => {
+        userPreview.style.display = "none";
+      }, 2000);
+      return;
+    }
+
     const { user, posts } = data;
 
     userPreview.innerHTML = `
@@ -672,7 +694,7 @@ document.addEventListener("DOMContentLoaded", function () {
         user.biography ? `<div class="preview-bio">${user.biography}</div>` : ""
       }
       ${
-        posts.length > 0
+        posts && posts.length > 0
           ? `
         <div class="preview-posts">
           ${posts
@@ -753,8 +775,8 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   async function saveWhitelist() {
+    // Only save to local storage (no sync)
     await chrome.storage.local.set({ whitelist });
-    await chrome.storage.sync.set({ whitelist });
 
     if (autoBackupEnabled) {
       await backupWhitelistToPC();

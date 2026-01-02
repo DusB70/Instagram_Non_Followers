@@ -501,7 +501,7 @@ body[data-theme="dark"] .user:hover {
 
 .whitelist-star:active {
   transform: scale(1);
-   color: #ffd700 !important;
+  color: #ffd700 !important;
 }
 
 /* Whitelisted state (filled star) */
@@ -523,7 +523,7 @@ body[data-theme="dark"] .whitelist-star {
 
 body[data-theme="dark"] .whitelist-star.whitelisted {
   color: #ffd700 !important;
-  background: #ffd700 ;
+  background: #ffd700;
 }
 
 /* Checkbox */
@@ -655,8 +655,15 @@ body[data-theme="dark"] .user-preview {
 }
 
 .preview-loading {
-  text-align: center;
   padding: 20px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.preview-error {
+  color: #e74c3c;
+  font-weight: 500;
 }
 
 .preview-header {

@@ -268,46 +268,69 @@ async function getUserId(sendResponse) {
 // ==================== Get User Preview ====================
 async function getUserPreview(username, sendResponse) {
   try {
+    // First, ensure the preview script is loaded
+    const scriptExists = document.querySelector(
+      'script[src*="previewScript.js"]'
+    );
+
+    if (!scriptExists) {
+      const script = document.createElement("script");
+      script.src = chrome.runtime.getURL("previewScript.js");
+      (document.head || document.documentElement).appendChild(script);
+
+      // Wait for script to load
+      await new Promise((resolve) => {
+        script.onload = resolve;
+        script.onerror = () => resolve(); // Continue even if error
+        setTimeout(resolve, 2000); // Timeout after 2 seconds
+      });
+    }
+
     const previewPromise = new Promise((resolve) => {
-      window.addEventListener(
-        "USER_PREVIEW_RESPONSE",
-        (e) => {
-          if (e.detail.username === username) {
+      // Set up response listener
+      const listener = (e) => {
+        console.log(
+          "[IG Non-Followers Content] Preview response received:",
+          e.detail
+        );
+        if (e.detail.username === username) {
+          window.removeEventListener("USER_PREVIEW_RESPONSE", listener);
+          if (e.detail.success) {
             resolve({
               success: true,
               data: e.detail.data,
             });
+          } else {
+            resolve({
+              success: false,
+              error: e.detail.error || "Failed to load preview",
+            });
           }
-        },
-        { once: true }
-      );
+        }
+      };
 
+      window.addEventListener("USER_PREVIEW_RESPONSE", listener);
+
+      // Timeout after 8 seconds
       setTimeout(() => {
+        window.removeEventListener("USER_PREVIEW_RESPONSE", listener);
         resolve({ success: false, error: "Timeout" });
-      }, 10000);
+      }, 8000);
+
+      // Request preview
+      console.log(
+        "[IG Non-Followers Content] Requesting preview for:",
+        username
+      );
+      window.dispatchEvent(
+        new CustomEvent("GET_USER_PREVIEW", {
+          detail: { username },
+        })
+      );
     });
 
-    // Inject previewScript.js if not already loaded
-    let script = document.querySelector('script[src*="previewScript.js"]');
-    if (!script) {
-      script = document.createElement("script");
-      script.src = chrome.runtime.getURL("previewScript.js");
-      (document.head || document.documentElement).appendChild(script);
-
-      await new Promise((resolve) => {
-        script.onload = resolve;
-        setTimeout(resolve, 1000);
-      });
-    }
-
-    // Request preview
-    window.dispatchEvent(
-      new CustomEvent("GET_USER_PREVIEW", {
-        detail: { username },
-      })
-    );
-
     const result = await previewPromise;
+    console.log("[IG Non-Followers Content] Preview result:", result);
     sendResponse(result);
   } catch (error) {
     console.error("[IG Non-Followers Content] Preview error:", error);
