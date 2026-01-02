@@ -1,264 +1,318 @@
 console.log("[IG Non-Followers] Content script loaded");
 
+// ==================== Message Listener ====================
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log("[IG Non-Followers] Received message:", message);
+  console.log("[IG Non-Followers Content] Received:", message.type);
 
   if (message.type === "START_SCAN") {
-    startScan(sendResponse);
-    return true;
-  } else if (message.type === "UNFOLLOW_USERS") {
+    startScan();
+    sendResponse({ success: true, message: "Scan started in background" });
+    return false; // Synchronous response
+  }
+
+  if (message.type === "UNFOLLOW_USERS") {
     unfollowUsers(
       message.usernames,
       message.safeModeEnabled,
       message.simulate || false,
       sendResponse
     );
-    return true;
-  } else if (message.type === "GET_USER_ID") {
+    return true; // Async response
+  }
+
+  if (message.type === "GET_USER_ID") {
     getUserId(sendResponse);
     return true;
-  } else if (message.type === "GET_USER_PREVIEW") {
+  }
+
+  if (message.type === "GET_USER_PREVIEW") {
     getUserPreview(message.username, sendResponse);
     return true;
   }
 });
 
-async function startScan(sendResponse) {
-  try {
-    if (!window.location.href.includes("instagram.com")) {
-      sendResponse({ success: false, error: "Not on Instagram" });
-      return;
-    }
+// ==================== Start Scan (Inject pageScript.js) ====================
+function startScan() {
+  console.log("[IG Non-Followers Content] Starting scan");
 
-    const isLoggedIn =
-      document.cookie.includes("sessionid") ||
-      document.cookie.includes("ds_user_id");
-
-    if (!isLoggedIn) {
-      sendResponse({ success: false, error: "Not logged in" });
-      return;
-    }
-
-    const existingScript = document.querySelector(
-      'script[src*="pageScript.js"]'
-    );
-    if (existingScript) existingScript.remove();
-
-    const scanPromise = new Promise((resolve) => {
-      let timeoutId;
-
-      window.addEventListener(
-        "IG_NON_FOLLOWERS_COMPLETE",
-        function onComplete(e) {
-          console.log("[IG Non-Followers] Scan complete:", e.detail);
-          clearTimeout(timeoutId);
-          window.removeEventListener("IG_NON_FOLLOWERS_COMPLETE", onComplete);
-          resolve({ success: true, ...e.detail });
-        },
-        { once: true }
-      );
-
-      window.addEventListener(
-        "IG_NON_FOLLOWERS_ERROR",
-        function onError(e) {
-          console.error("[IG Non-Followers] Scan error:", e.detail);
-          clearTimeout(timeoutId);
-          window.removeEventListener("IG_NON_FOLLOWERS_ERROR", onError);
-          resolve({ success: false, error: e.detail.error });
-        },
-        { once: true }
-      );
-
-      timeoutId = setTimeout(() => {
-        resolve({ success: false, error: "Scan timeout" });
-      }, 120000);
+  // Validation
+  if (!window.location.href.includes("instagram.com")) {
+    chrome.runtime.sendMessage({
+      type: "SCAN_ERROR",
+      error: "Not on Instagram",
     });
-
-    const script = document.createElement("script");
-    script.src = chrome.runtime.getURL("pageScript.js");
-    script.onload = function () {
-      console.log("[IG Non-Followers] Page script loaded");
-      this.remove();
-    };
-    script.onerror = function () {
-      console.error("[IG Non-Followers] Failed to load page script");
-      sendResponse({ success: false, error: "Failed to load scanner" });
-    };
-    (document.head || document.documentElement).appendChild(script);
-
-    window.addEventListener("IG_SCAN_PROGRESS", (e) => {
-      chrome.runtime.sendMessage({
-        type: "SCAN_PROGRESS",
-        message: e.detail.message,
-        percent: e.detail.percent,
-      });
-    });
-
-    const result = await scanPromise;
-    sendResponse(result);
-  } catch (error) {
-    console.error("[IG Non-Followers] Error:", error);
-    sendResponse({ success: false, error: error.message });
+    return;
   }
+
+  const isLoggedIn =
+    document.cookie.includes("sessionid") ||
+    document.cookie.includes("ds_user_id");
+
+  if (!isLoggedIn) {
+    chrome.runtime.sendMessage({
+      type: "SCAN_ERROR",
+      error: "Not logged in to Instagram",
+    });
+    return;
+  }
+
+  // Notify background: scan starting
+  chrome.runtime.sendMessage({ type: "SCAN_STARTED" });
+
+  // Remove old script if exists
+  const existingScript = document.querySelector('script[src*="pageScript.js"]');
+  if (existingScript) {
+    existingScript.remove();
+  }
+
+  // Set up event listeners for page script events
+  setupPageScriptListeners();
+
+  // Inject pageScript.js
+  const script = document.createElement("script");
+  script.src = chrome.runtime.getURL("pageScript.js");
+  script.onload = function () {
+    console.log("[IG Non-Followers Content] Page script injected");
+    this.remove();
+  };
+  script.onerror = function () {
+    console.error("[IG Non-Followers Content] Failed to inject page script");
+    chrome.runtime.sendMessage({
+      type: "SCAN_ERROR",
+      error: "Failed to load scanner",
+    });
+  };
+  (document.head || document.documentElement).appendChild(script);
 }
 
+// ==================== Page Script Event Listeners ====================
+function setupPageScriptListeners() {
+  // Progress updates
+  window.addEventListener("IG_SCAN_PROGRESS", (e) => {
+    console.log("[IG Non-Followers Content] Progress:", e.detail.percent + "%");
+    chrome.runtime.sendMessage({
+      type: "SCAN_PROGRESS",
+      message: e.detail.message,
+      percent: e.detail.percent,
+    });
+  });
+
+  // Scan completed
+  window.addEventListener(
+    "IG_NON_FOLLOWERS_COMPLETE",
+    (e) => {
+      console.log(
+        "[IG Non-Followers Content] Scan complete:",
+        e.detail.nonFollowers.length,
+        "non-followers"
+      );
+      chrome.runtime.sendMessage({
+        type: "SCAN_COMPLETE",
+        data: {
+          followers: e.detail.followers,
+          following: e.detail.following,
+          nonFollowers: e.detail.nonFollowers,
+        },
+      });
+    },
+    { once: true }
+  );
+
+  // Scan error
+  window.addEventListener(
+    "IG_NON_FOLLOWERS_ERROR",
+    (e) => {
+      console.error("[IG Non-Followers Content] Scan error:", e.detail.error);
+      chrome.runtime.sendMessage({
+        type: "SCAN_ERROR",
+        error: e.detail.error,
+      });
+    },
+    { once: true }
+  );
+}
+
+// ==================== Unfollow Users ====================
 async function unfollowUsers(
   usernames,
   safeModeEnabled,
   simulate,
   sendResponse
 ) {
+  console.log(
+    `[IG Non-Followers Content] Unfollowing ${usernames.length} users`
+  );
+
   try {
-    // Remove existing script if present
+    // Remove old unfollow script
     const existingScript = document.querySelector(
       'script[src*="unfollowScript.js"]'
     );
-    if (existingScript) existingScript.remove();
+    if (existingScript) {
+      existingScript.remove();
+    }
 
+    // Set up unfollow listeners
+    const unfollowPromise = new Promise((resolve) => {
+      window.addEventListener(
+        "UNFOLLOW_COMPLETE",
+        (e) => {
+          console.log("[IG Non-Followers Content] Unfollow complete");
+          resolve({
+            success: true,
+            unfollowedCount: e.detail.unfollowedCount,
+            failed: e.detail.failed,
+            rateLimited: e.detail.rateLimited,
+          });
+        },
+        { once: true }
+      );
+
+      window.addEventListener(
+        "UNFOLLOW_ERROR",
+        (e) => {
+          console.error("[IG Non-Followers Content] Unfollow error");
+          resolve({
+            success: false,
+            error: e.detail.error,
+            rateLimited: false,
+          });
+        },
+        { once: true }
+      );
+    });
+
+    // Inject unfollowScript.js
     const script = document.createElement("script");
     script.src = chrome.runtime.getURL("unfollowScript.js");
-
     script.onload = function () {
-      console.log("[IG Non-Followers] Unfollow script loaded");
-      this.remove();
+      console.log("[IG Non-Followers Content] Unfollow script loaded");
 
+      // Trigger unfollow
       window.dispatchEvent(
         new CustomEvent("START_UNFOLLOW", {
-          detail: { usernames, safeModeEnabled, simulate },
+          detail: {
+            usernames,
+            safeModeEnabled,
+            simulate,
+          },
         })
       );
-    };
 
+      this.remove();
+    };
+    script.onerror = function () {
+      console.error(
+        "[IG Non-Followers Content] Failed to load unfollow script"
+      );
+      sendResponse({
+        success: false,
+        error: "Failed to load unfollow script",
+      });
+    };
     (document.head || document.documentElement).appendChild(script);
 
-    window.addEventListener(
-      "UNFOLLOW_COMPLETE",
-      function onComplete(e) {
-        window.removeEventListener("UNFOLLOW_COMPLETE", onComplete);
-        sendResponse({
-          success: true,
-          unfollowedCount: e.detail.unfollowedCount,
-          failed: e.detail.failed,
-          rateLimited: e.detail.rateLimited,
-        });
-      },
-      { once: true }
-    );
-
-    window.addEventListener(
-      "UNFOLLOW_ERROR",
-      function onError(e) {
-        window.removeEventListener("UNFOLLOW_ERROR", onError);
-        sendResponse({
-          success: false,
-          error: e.detail.error,
-          rateLimited: false,
-        });
-      },
-      { once: true }
-    );
-
-    // Listen for progress updates
-    window.addEventListener("UNFOLLOW_PROGRESS", function onProgress(e) {
-      chrome.runtime.sendMessage({
-        type: "UNFOLLOW_PROGRESS",
-        current: e.detail.current,
-        total: e.detail.total,
-        username: e.detail.username,
-      });
-    });
+    const result = await unfollowPromise;
+    sendResponse(result);
   } catch (error) {
-    console.error("[IG Non-Followers] Unfollow error:", error);
-    sendResponse({ success: false, error: error.message, rateLimited: false });
+    console.error("[IG Non-Followers Content] Unfollow error:", error);
+    sendResponse({ success: false, error: error.message });
   }
 }
 
+// ==================== Get User ID ====================
 async function getUserId(sendResponse) {
   try {
-    // Remove existing script
+    // Remove old preview script
     const existingScript = document.querySelector(
       'script[src*="previewScript.js"]'
     );
-    if (existingScript) existingScript.remove();
+    if (existingScript) {
+      existingScript.remove();
+    }
 
+    const userIdPromise = new Promise((resolve) => {
+      window.addEventListener(
+        "CURRENT_USER_ID_RESPONSE",
+        (e) => {
+          resolve({
+            userId: e.detail.userId,
+            username: e.detail.username,
+          });
+        },
+        { once: true }
+      );
+
+      setTimeout(() => {
+        resolve({ userId: null, username: null });
+      }, 5000);
+    });
+
+    // Inject previewScript.js
     const script = document.createElement("script");
     script.src = chrome.runtime.getURL("previewScript.js");
-
     script.onload = function () {
-      this.remove();
-
       window.dispatchEvent(new CustomEvent("GET_CURRENT_USER_ID"));
+      this.remove();
     };
-
     (document.head || document.documentElement).appendChild(script);
 
-    window.addEventListener(
-      "CURRENT_USER_ID_RESPONSE",
-      function onResponse(e) {
-        window.removeEventListener("CURRENT_USER_ID_RESPONSE", onResponse);
-        sendResponse({
-          userId: e.detail.userId,
-          username: e.detail.username,
-        });
-      },
-      { once: true }
-    );
+    const result = await userIdPromise;
+    sendResponse(result);
   } catch (error) {
-    console.error("[IG Non-Followers] Get user ID error:", error);
+    console.error("[IG Non-Followers Content] Get user ID error:", error);
     sendResponse({ userId: null, username: null });
   }
 }
 
+// ==================== Get User Preview ====================
 async function getUserPreview(username, sendResponse) {
   try {
-    // Remove existing script
-    const existingScript = document.querySelector(
-      'script[src*="previewScript.js"]'
-    );
-    if (existingScript) existingScript.remove();
-
-    const script = document.createElement("script");
-    script.src = chrome.runtime.getURL("previewScript.js");
-
-    script.onload = function () {
-      this.remove();
-
-      window.dispatchEvent(
-        new CustomEvent("GET_USER_PREVIEW", {
-          detail: { username },
-        })
+    const previewPromise = new Promise((resolve) => {
+      window.addEventListener(
+        "USER_PREVIEW_RESPONSE",
+        (e) => {
+          if (e.detail.username === username) {
+            resolve({
+              success: true,
+              data: e.detail.data,
+            });
+          }
+        },
+        { once: true }
       );
-    };
 
-    (document.head || document.documentElement).appendChild(script);
+      setTimeout(() => {
+        resolve({ success: false, error: "Timeout" });
+      }, 10000);
+    });
 
-    // Set timeout for preview fetch
-    const timeoutId = setTimeout(() => {
-      sendResponse({ success: false, error: "Preview timeout" });
-    }, 10000);
+    // Inject previewScript.js if not already loaded
+    let script = document.querySelector('script[src*="previewScript.js"]');
+    if (!script) {
+      script = document.createElement("script");
+      script.src = chrome.runtime.getURL("previewScript.js");
+      (document.head || document.documentElement).appendChild(script);
 
-    window.addEventListener(
-      "USER_PREVIEW_RESPONSE",
-      function onResponse(e) {
-        clearTimeout(timeoutId);
-        window.removeEventListener("USER_PREVIEW_RESPONSE", onResponse);
+      await new Promise((resolve) => {
+        script.onload = resolve;
+        setTimeout(resolve, 1000);
+      });
+    }
 
-        if (e.detail.success) {
-          sendResponse({
-            success: true,
-            data: e.detail.data,
-          });
-        } else {
-          sendResponse({
-            success: false,
-            error: e.detail.error,
-          });
-        }
-      },
-      { once: true }
+    // Request preview
+    window.dispatchEvent(
+      new CustomEvent("GET_USER_PREVIEW", {
+        detail: { username },
+      })
     );
+
+    const result = await previewPromise;
+    sendResponse(result);
   } catch (error) {
-    console.error("[IG Non-Followers] Get user preview error:", error);
+    console.error("[IG Non-Followers Content] Preview error:", error);
     sendResponse({ success: false, error: error.message });
   }
 }
+
+console.log("[IG Non-Followers Content] Ready");

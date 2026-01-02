@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "IG Non-Followers Pro",
-  "version": "2.1",
+  "version": "3",
   "description": "Advanced Instagram non-followers manager with whitelist, filters, and smart features",
   "permissions": [
     "activeTab",

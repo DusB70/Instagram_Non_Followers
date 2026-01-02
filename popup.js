@@ -1,4 +1,6 @@
 document.addEventListener("DOMContentLoaded", function () {
+  console.log("[IG Non-Followers Popup] Initializing UI");
+
   // ==================== DOM Elements ====================
   const btn = document.getElementById("btn");
   const list = document.getElementById("list");
@@ -41,7 +43,6 @@ document.addEventListener("DOMContentLoaded", function () {
   const userPreview = document.getElementById("user-preview");
 
   // ==================== State Management ====================
-  let isScanning = false;
   let currentScanData = null;
   let selectedUsers = new Set();
   let allNonFollowers = [];
@@ -57,6 +58,7 @@ document.addEventListener("DOMContentLoaded", function () {
   let autoBackupEnabled = false;
   let previewTimeout = null;
   let currentTheme = "light";
+  let statusPollInterval = null;
   const SAFE_MODE_LIMIT = 50;
   const BACKUP_FILENAME = "ig-nonfollowers-whitelist-backup.json";
 
@@ -67,7 +69,7 @@ document.addEventListener("DOMContentLoaded", function () {
     await loadUnfollowedUsers();
     await getCurrentUserId();
     setupEventListeners();
-    checkLastScan();
+    await checkScanStatus(); // Read from storage
     autoCheckInstagram();
   }
 
@@ -115,7 +117,6 @@ document.addEventListener("DOMContentLoaded", function () {
             selectedUsers = new Set(result.selectedUsers);
           }
 
-          // Restore last sort option
           if (result.lastSort) {
             sortFilter.value = result.lastSort;
           }
@@ -131,6 +132,7 @@ document.addEventListener("DOMContentLoaded", function () {
     return new Promise((resolve) => {
       chrome.storage.local.get(["whitelist"], (result) => {
         whitelist = result.whitelist || {};
+        updateWhitelistCount();
         resolve();
       });
     });
@@ -203,13 +205,272 @@ document.addEventListener("DOMContentLoaded", function () {
       }
     });
 
+    // Listen for broadcast messages from background
     chrome.runtime.onMessage.addListener((message) => {
-      if (message.type === "SCAN_PROGRESS") {
-        status.textContent = message.message;
-        if (message.percent !== undefined) {
-          progress.style.setProperty("--progress", `${message.percent}%`);
+      console.log("[IG Non-Followers Popup] Received broadcast:", message.type);
+
+      if (message.type === "SCAN_STARTED") {
+        onScanStarted();
+      } else if (message.type === "SCAN_PROGRESS_UPDATE") {
+        onScanProgress(message.message, message.percent);
+      } else if (message.type === "SCAN_COMPLETED") {
+        onScanCompleted(message.data);
+      } else if (message.type === "SCAN_ERROR") {
+        onScanError(message.error);
+      }
+    });
+
+    // Listen for storage changes (event-driven updates)
+    chrome.storage.onChanged.addListener((changes, namespace) => {
+      if (namespace === "local") {
+        // Whitelist changed
+        if (changes.whitelist) {
+          whitelist = changes.whitelist.newValue || {};
+          updateWhitelistCount();
+
+          // Reload list if scan data exists
+          if (currentScanData) {
+            reloadNonFollowersList();
+          }
+
+          // Update whitelist modal if open
+          if (whitelistModal.style.display === "flex") {
+            displayWhitelistItems();
+          }
+        }
+
+        // Unfollowed users changed
+        if (changes.unfollowedUsers) {
+          unfollowedUsers = new Set(changes.unfollowedUsers.newValue || []);
+
+          // Reload list if scan data exists
+          if (currentScanData) {
+            reloadNonFollowersList();
+          }
+        }
+
+        // Scan data changed (from background or another popup)
+        if (changes.scanData) {
+          const newScanData = changes.scanData.newValue;
+          if (newScanData) {
+            displayResults(newScanData);
+          }
+        }
+
+        // Session unfollow count changed
+        if (changes.sessionUnfollowCount) {
+          sessionUnfollowCount = changes.sessionUnfollowCount.newValue || 0;
+          updateUnfollowCounter();
         }
       }
+    });
+  }
+
+  // ==================== Scan Status (Read from Storage) ====================
+  async function checkScanStatus() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(
+        ["scanInProgress", "scanProgress", "scanData", "lastScan", "scanError"],
+        (result) => {
+          if (result.scanInProgress) {
+            // Scan is currently running
+            console.log(
+              "[IG Non-Followers Popup] Scan in progress, showing live status"
+            );
+            onScanStarted();
+            if (result.scanProgress) {
+              onScanProgress(
+                result.scanProgress.message,
+                result.scanProgress.percent
+              );
+            }
+            // Start polling for updates
+            startStatusPolling();
+          } else if (result.scanData && result.lastScan) {
+            // Previous scan completed
+            console.log(
+              "[IG Non-Followers Popup] Loading previous scan results"
+            );
+            displayResults(result.scanData);
+            showLastScanInfo(result.lastScan);
+            status.innerHTML = `<span>💾</span><span>Loaded previous scan results</span>`;
+          } else if (result.scanError) {
+            // Previous scan had error
+            console.log("[IG Non-Followers Popup] Previous scan had error");
+            onScanError(result.scanError);
+          }
+          resolve();
+        }
+      );
+    });
+  }
+
+  function startStatusPolling() {
+    // Poll storage every 1 second for progress updates
+    if (statusPollInterval) clearInterval(statusPollInterval);
+
+    statusPollInterval = setInterval(() => {
+      chrome.storage.local.get(["scanInProgress", "scanProgress"], (result) => {
+        if (!result.scanInProgress) {
+          // Scan finished, load results
+          stopStatusPolling();
+          checkScanStatus();
+        } else if (result.scanProgress) {
+          onScanProgress(
+            result.scanProgress.message,
+            result.scanProgress.percent
+          );
+        }
+      });
+    }, 1000);
+  }
+
+  function stopStatusPolling() {
+    if (statusPollInterval) {
+      clearInterval(statusPollInterval);
+      statusPollInterval = null;
+    }
+  }
+
+  // ==================== Scan Lifecycle Handlers ====================
+  function onScanStarted() {
+    btn.disabled = true;
+    btn.textContent = "⏳ Scanning...";
+    list.innerHTML = "";
+    resultsHeader.style.display = "none";
+    bulkActions.style.display = "none";
+    filtersContainer.style.display = "none";
+    status.innerHTML =
+      "<span>🔄</span><span>Scan running in background...</span>";
+    status.classList.remove("warning", "error");
+    progress.style.setProperty("--progress", "0%");
+  }
+
+  function onScanProgress(message, percent) {
+    status.textContent = message || "Scanning...";
+    progress.style.setProperty("--progress", `${percent || 0}%`);
+  }
+
+  async function onScanCompleted(data) {
+    stopStatusPolling();
+    btn.disabled = false;
+    btn.textContent = "🔍 Scan Non-Followers";
+
+    await displayResults(data);
+
+    chrome.storage.local.get(["lastScan"], (result) => {
+      if (result.lastScan) {
+        showLastScanInfo(result.lastScan);
+      }
+    });
+
+    status.innerHTML = `<span>✅</span><span>Scan completed successfully!</span>`;
+    status.classList.remove("warning", "error");
+    progress.style.setProperty("--progress", "100%");
+  }
+
+  function onScanError(error) {
+    stopStatusPolling();
+    btn.disabled = false;
+    btn.textContent = "🔍 Scan Non-Followers";
+    status.innerHTML = `<span>❌</span><span>Error: ${error}</span>`;
+    status.classList.add("error");
+    progress.style.setProperty("--progress", "0%");
+  }
+
+  // ==================== Start Scan (Trigger Only) ====================
+  async function startScan() {
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+
+    if (!tab.url || !tab.url.includes("instagram.com")) {
+      status.innerHTML =
+        "<span>❌</span><span>Please open Instagram first</span>";
+      status.classList.add("error");
+      return;
+    }
+
+    // Clear previous scan data
+    imageCache.clear();
+
+    try {
+      // Send message to content script to start scan
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        type: "START_SCAN",
+      });
+
+      if (response && response.success) {
+        console.log("[IG Non-Followers Popup] Scan started successfully");
+        onScanStarted();
+        startStatusPolling();
+
+        // Show user-friendly message
+        status.innerHTML =
+          "<span>🚀</span><span>Scan started! You can close this popup.</span>";
+      }
+    } catch (error) {
+      console.error("[IG Non-Followers Popup] Error starting scan:", error);
+      status.innerHTML = `<span>❌</span><span>Error: ${error.message}</span>`;
+      status.classList.add("error");
+    }
+  }
+
+  // ==================== Display Results ====================
+  async function displayResults(data) {
+    const { followers, following, nonFollowers } = data;
+
+    currentScanData = data;
+
+    // Filter out whitelisted and unfollowed users
+    const filtered = nonFollowers.filter(
+      (user) =>
+        !isWhitelisted(user.username) && !unfollowedUsers.has(user.username)
+    );
+
+    allNonFollowers = filtered;
+    filteredNonFollowers = filtered;
+
+    stats.innerHTML = `
+      <strong>Results:</strong> ${filtered.length} non-followers
+      <br>
+      <small>Following: ${following} | Followers: ${followers}</small>
+    `;
+
+    resultsHeader.style.display = "block";
+    bulkActions.style.display = "block";
+    filtersContainer.style.display = "block";
+
+    renderUserList(filtered);
+    updateSelectedCount();
+  }
+
+  function renderUserList(users) {
+    list.innerHTML = "";
+
+    if (users.length === 0) {
+      list.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">✨</div>
+          <h3>All Clear!</h3>
+          <p>Everyone you follow follows you back</p>
+        </div>
+      `;
+      return;
+    }
+
+    users.forEach((user, index) => {
+      const userElement = createUserElement(user, index);
+      list.appendChild(userElement);
+    });
+
+    // Restore selections
+    selectedUsers.forEach((index) => {
+      const checkbox = list.querySelector(
+        `[data-index="${index}"] .user-checkbox`
+      );
+      if (checkbox) checkbox.checked = true;
     });
   }
 
@@ -427,7 +688,6 @@ document.addEventListener("DOMContentLoaded", function () {
       }
     `;
 
-    // Load avatar after rendering
     const avatarContainer = document.getElementById("preview-avatar-container");
     if (avatarContainer && user.profile_pic_url) {
       loadAvatar(avatarContainer, user.profile_pic_url);
@@ -446,7 +706,7 @@ document.addEventListener("DOMContentLoaded", function () {
     return whitelist[currentUserId].some((u) => u.username === username);
   }
 
-  async function toggleWhitelist(username, fullName, profilePicUrl, index) {
+  async function toggleWhitelist(username, fullName, profilePicUrl) {
     if (!currentUserId) {
       alert("⚠️ Could not determine current user ID");
       return;
@@ -459,13 +719,11 @@ document.addEventListener("DOMContentLoaded", function () {
     const isCurrentlyWhitelisted = isWhitelisted(username);
 
     if (isCurrentlyWhitelisted) {
-      // Remove from whitelist
       whitelist[currentUserId] = whitelist[currentUserId].filter(
         (u) => u.username !== username
       );
       status.innerHTML = `<span>☆</span><span>@${username} removed from whitelist</span>`;
     } else {
-      // Add to whitelist
       whitelist[currentUserId].push({
         username: username,
         full_name: fullName,
@@ -477,35 +735,21 @@ document.addEventListener("DOMContentLoaded", function () {
 
     await saveWhitelist();
 
-    // Update star visual state with color change
-    const star = document.querySelector(
-      `[data-index="${index}"] .whitelist-star`
-    );
-    if (star) {
-      if (isCurrentlyWhitelisted) {
-        // Removing from whitelist - gray star
-        star.textContent = "☆";
-        star.classList.remove("whitelisted");
-      } else {
-        // Adding to whitelist - gold star
-        star.textContent = "★";
-        star.classList.add("whitelisted");
-      }
-    }
-
-    // Real-time update: remove from list if added to whitelist
-    if (!isCurrentlyWhitelisted) {
-      setTimeout(() => {
-        removeUserFromList(index);
-      }, 1000);
-    }
-
-    updateWhitelistCount();
-
-    // If whitelist modal is open, refresh it
-    if (whitelistModal.style.display === "flex") {
-      displayWhitelistItems();
-    }
+    // Update stars immediately (event-driven update will handle the rest)
+    document
+      .querySelectorAll(`[data-username="${username}"]`)
+      .forEach((userElement) => {
+        const star = userElement.querySelector(".whitelist-star");
+        if (star) {
+          if (isCurrentlyWhitelisted) {
+            star.textContent = "☆";
+            star.classList.remove("whitelisted");
+          } else {
+            star.textContent = "★";
+            star.classList.add("whitelisted");
+          }
+        }
+      });
   }
 
   async function saveWhitelist() {
@@ -611,25 +855,10 @@ document.addEventListener("DOMContentLoaded", function () {
     );
 
     await saveWhitelist();
-    displayWhitelistItems();
-    updateWhitelistCount();
-
-    // Real-time update: update star in list if user is visible
-    const userElement = list.querySelector(`[data-username="${username}"]`);
-    if (userElement) {
-      const star = userElement.querySelector(".whitelist-star");
-      if (star) {
-        star.textContent = "☆";
-        star.classList.remove("whitelisted");
-      }
-    } else {
-      // User not in current list, reload to show them
-      if (currentScanData) {
-        await reloadNonFollowersList();
-      }
-    }
 
     status.innerHTML = `<span>☆</span><span>@${username} removed from whitelist</span>`;
+
+    // Event-driven update will handle the rest via storage.onChanged
   };
 
   async function reloadNonFollowersList() {
@@ -641,6 +870,7 @@ document.addEventListener("DOMContentLoaded", function () {
       (user) =>
         !isWhitelisted(user.username) && !unfollowedUsers.has(user.username)
     );
+
     allNonFollowers = filtered;
     filteredNonFollowers = filtered;
 
@@ -650,7 +880,9 @@ document.addEventListener("DOMContentLoaded", function () {
       <small>Following: ${following} | Followers: ${followers}</small>
     `;
 
-    applyFilters();
+    selectedUsers.clear();
+    renderUserList(filteredNonFollowers);
+    updateSelectedCount();
   }
 
   async function exportWhitelist() {
@@ -678,25 +910,42 @@ document.addEventListener("DOMContentLoaded", function () {
       try {
         const imported = JSON.parse(e.target.result);
 
+        if (typeof imported !== "object" || imported === null) {
+          throw new Error("Invalid whitelist format");
+        }
+
+        let importedCount = 0;
+
         Object.keys(imported).forEach((userId) => {
+          if (!Array.isArray(imported[userId])) {
+            return;
+          }
+
           if (!whitelist[userId]) {
             whitelist[userId] = [];
           }
+
           imported[userId].forEach((user) => {
-            if (!whitelist[userId].some((u) => u.username === user.username)) {
+            if (
+              user.username &&
+              !whitelist[userId].some((u) => u.username === user.username)
+            ) {
               whitelist[userId].push(user);
+              importedCount++;
             }
           });
         });
 
         await saveWhitelist();
-        displayWhitelistItems();
-        updateWhitelistCount();
-        status.innerHTML =
-          "<span>📤</span><span>Whitelist imported successfully</span>";
+
+        status.innerHTML = `<span>📤</span><span>Whitelist imported successfully (${importedCount} users)</span>`;
+        status.classList.remove("error");
+
+        // Event-driven update will handle list refresh via storage.onChanged
       } catch (error) {
         console.error("Import error:", error);
-        alert("❌ Failed to import whitelist. Invalid file format.");
+        status.innerHTML = `<span>❌</span><span>Failed to import: ${error.message}</span>`;
+        status.classList.add("error");
       }
     };
     reader.readAsText(file);
@@ -733,8 +982,7 @@ document.addEventListener("DOMContentLoaded", function () {
       toggleWhitelist(
         user.username,
         user.full_name,
-        user.profile_pic_url_hd || user.profile_pic_url,
-        index
+        user.profile_pic_url_hd || user.profile_pic_url
       );
     };
 
@@ -822,131 +1070,6 @@ document.addEventListener("DOMContentLoaded", function () {
     return div;
   }
 
-  // ==================== Scanning ====================
-  async function startScan() {
-    if (isScanning) return;
-
-    isScanning = true;
-    btn.disabled = true;
-    btn.textContent = "⏳ Scanning...";
-    list.innerHTML = "";
-    resultsHeader.style.display = "none";
-    bulkActions.style.display = "none";
-    filtersContainer.style.display = "none";
-    status.textContent = "Preparing to scan...";
-    status.classList.remove("warning", "error");
-    progress.style.setProperty("--progress", "0%");
-    imageCache.clear();
-
-    const [tab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
-
-    if (!tab.url || !tab.url.includes("instagram.com")) {
-      status.textContent = "❌ Please open Instagram first";
-      btn.disabled = false;
-      btn.textContent = "🔍 Scan Non-Followers";
-      isScanning = false;
-      return;
-    }
-
-    try {
-      const response = await chrome.tabs.sendMessage(tab.id, {
-        type: "START_SCAN",
-      });
-
-      if (response.success) {
-        await displayResults(response);
-      } else {
-        status.textContent = `❌ Error: ${response.error}`;
-      }
-    } catch (error) {
-      console.error("Scan error:", error);
-      status.textContent = `❌ Error: ${error.message}`;
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "🔍 Scan Non-Followers";
-      isScanning = false;
-    }
-  }
-
-  async function displayResults(data) {
-    const { followers, following, nonFollowers } = data;
-
-    currentScanData = data;
-
-    const filtered = nonFollowers.filter(
-      (user) =>
-        !isWhitelisted(user.username) && !unfollowedUsers.has(user.username)
-    );
-    allNonFollowers = filtered;
-    filteredNonFollowers = filtered;
-
-    stats.innerHTML = `
-      <strong>Results:</strong> ${filtered.length} non-followers
-      <br>
-      <small>Following: ${following} | Followers: ${followers}</small>
-    `;
-
-    resultsHeader.style.display = "block";
-    bulkActions.style.display = "block";
-    filtersContainer.style.display = "block";
-
-    let statusEmoji = "📊";
-    let statusMessage = "";
-
-    if (filtered.length === 0) {
-      statusEmoji = "🎉";
-      statusMessage = "Everyone follows you back!";
-    } else {
-      statusMessage = `Found ${filtered.length} user${
-        filtered.length !== 1 ? "s" : ""
-      } not following back`;
-    }
-
-    status.classList.remove("warning", "error");
-    status.innerHTML = `<span>${statusEmoji}</span><span>${statusMessage}</span>`;
-    progress.style.setProperty("--progress", "100%");
-
-    renderUserList(filtered);
-    updateSelectedCount();
-
-    await chrome.storage.local.set({
-      lastScan: Date.now(),
-      scanData: data,
-    });
-
-    showLastScanInfo();
-  }
-
-  function renderUserList(users) {
-    list.innerHTML = "";
-
-    if (users.length === 0) {
-      list.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-icon">✨</div>
-          <h3>All Clear!</h3>
-          <p>Everyone you follow follows you back</p>
-        </div>
-      `;
-      return;
-    }
-
-    users.forEach((user, index) => {
-      const userElement = createUserElement(user, index);
-      list.appendChild(userElement);
-    });
-
-    selectedUsers.forEach((index) => {
-      const checkbox = list.querySelector(
-        `[data-index="${index}"] .user-checkbox`
-      );
-      if (checkbox) checkbox.checked = true;
-    });
-  }
-
   // ==================== Filtering & Sorting ====================
   function toggleFilters() {
     const isVisible = filtersPanel.style.display === "block";
@@ -962,7 +1085,6 @@ document.addEventListener("DOMContentLoaded", function () {
 
     let filtered = [...allNonFollowers];
 
-    // Search filter
     if (searchValue) {
       filtered = filtered.filter(
         (user) =>
@@ -971,7 +1093,6 @@ document.addEventListener("DOMContentLoaded", function () {
       );
     }
 
-    // Sort
     switch (sortValue) {
       case "username-asc":
         filtered.sort((a, b) => a.username.localeCompare(b.username));
@@ -995,11 +1116,11 @@ document.addEventListener("DOMContentLoaded", function () {
         break;
       case "default":
       default:
-        // Keep original order
         break;
     }
 
     filteredNonFollowers = filtered;
+    selectedUsers.clear();
     renderUserList(filtered);
 
     chrome.storage.local.set({ lastSort: sortValue });
@@ -1114,14 +1235,13 @@ document.addEventListener("DOMContentLoaded", function () {
       if (response.success && response.unfollowedCount > 0) {
         sessionUnfollowCount++;
         chrome.storage.local.set({ sessionUnfollowCount });
-        updateUnfollowCounter();
 
         unfollowedUsers.add(username);
         await chrome.storage.local.set({
           unfollowedUsers: Array.from(unfollowedUsers),
         });
 
-        removeUserFromList(index);
+        // Event-driven update will handle list refresh
         status.classList.remove("warning", "error");
         status.innerHTML = `<span>✅</span><span>Successfully unfollowed @${username}</span>`;
       } else {
@@ -1214,8 +1334,6 @@ document.addEventListener("DOMContentLoaded", function () {
             updateProgress();
 
             unfollowedUsers.add(username);
-
-            removeUserFromList(selectedIndices[i]);
           }
 
           if (i < selectedUsernames.length - 1) {
@@ -1232,7 +1350,7 @@ document.addEventListener("DOMContentLoaded", function () {
         unfollowedUsers: Array.from(unfollowedUsers),
       });
 
-      updateUnfollowCounter();
+      // Clear selections and reset button
       selectedUsers.clear();
       updateSelectedCount();
 
@@ -1246,8 +1364,12 @@ document.addEventListener("DOMContentLoaded", function () {
       status.innerHTML = `<span>❌</span><span>Error: ${error.message}</span>`;
     } finally {
       unfollowProgress.style.display = "none";
+
+      // Reset button text properly
+      selectedUsers.clear();
+      updateSelectedCount(); // This will reset the button text to "🚫 Unfollow Selected (0)"
+
       if (!isLocked && !isPaused) {
-        unfollowSelectedBtn.textContent = `🚫 Unfollow Selected (0)`;
         unfollowSelectedBtn.disabled = true;
       }
     }
@@ -1302,26 +1424,12 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   // ==================== Last Scan Management ====================
-  function showLastScanInfo() {
-    chrome.storage.local.get(["lastScan"], (result) => {
-      if (result.lastScan) {
-        const date = new Date(result.lastScan);
-        lastScanText.textContent = `Last scan: ${date.toLocaleString()}`;
-        lastScanInfo.style.display = "flex";
-      }
-    });
-  }
-
-  function checkLastScan() {
-    chrome.storage.local.get(["scanData", "lastScan"], (result) => {
-      if (result.scanData && result.lastScan) {
-        const date = new Date(result.lastScan);
-        lastScanText.textContent = `Last scan: ${date.toLocaleString()}`;
-        lastScanInfo.style.display = "flex";
-        displayResults(result.scanData);
-        status.innerHTML = `<span>💾</span><span>Loaded previous scan results</span>`;
-      }
-    });
+  function showLastScanInfo(timestamp) {
+    if (timestamp) {
+      const date = new Date(timestamp);
+      lastScanText.textContent = `Last scan: ${date.toLocaleString()}`;
+      lastScanInfo.style.display = "flex";
+    }
   }
 
   function clearLastScan() {

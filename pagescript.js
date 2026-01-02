@@ -7,7 +7,7 @@
     try {
       sendProgress("Getting Instagram data...", 5);
 
-      const instagramData = getInstagramData();
+      const instagramData = await getInstagramData();
       if (!instagramData) {
         throw new Error(
           "Could not find Instagram data. Make sure you're on your profile page."
@@ -34,67 +34,113 @@
 
       sendProgress("Complete!", 100);
 
-      window.postMessage(
-        {
-          type: "SCAN_COMPLETE",
-          data: {
-            success: true,
+      window.dispatchEvent(
+        new CustomEvent("IG_NON_FOLLOWERS_COMPLETE", {
+          detail: {
             followers: followers.length,
             following: following.length,
             nonFollowers: nonFollowers,
           },
-        },
-        "*"
+        })
       );
     } catch (error) {
       console.error("[IG Non-Followers] Error:", error);
-      window.postMessage(
-        {
-          type: "SCAN_COMPLETE",
-          data: {
-            success: false,
+      window.dispatchEvent(
+        new CustomEvent("IG_NON_FOLLOWERS_ERROR", {
+          detail: {
             error: error.message,
           },
-        },
-        "*"
+        })
       );
     }
   }
 
-  function getInstagramData() {
+  async function getInstagramData() {
     try {
+      // Method 1: Try getting from current page URL
+      const urlMatch = window.location.pathname.match(/^\/([^\/]+)\/?$/);
+      if (urlMatch) {
+        const username = urlMatch[1];
+        console.log("[IG Non-Followers] Found username from URL:", username);
+
+        const userId = await getUserIdFromUsername(username);
+        if (userId) {
+          return { user_id: userId };
+        }
+      }
+
+      // Method 2: Try cookies
+      const cookieMatch = document.cookie.match(/ds_user_id=([^;]+)/);
+      if (cookieMatch) {
+        console.log(
+          "[IG Non-Followers] Found user ID in cookies:",
+          cookieMatch[1]
+        );
+        return { user_id: cookieMatch[1] };
+      }
+
+      // Method 3: Try window._sharedData
+      if (window._sharedData?.config?.viewerId) {
+        console.log("[IG Non-Followers] Found user ID in _sharedData");
+        return { user_id: window._sharedData.config.viewerId };
+      }
+
+      // Method 4: Try script tags
       const scriptTags = document.querySelectorAll(
         'script[type="application/ld+json"]'
       );
       for (const script of scriptTags) {
         try {
           const data = JSON.parse(script.textContent);
-          if (data.author && data.author.identifier) {
-            return {
-              user_id: data.author.identifier,
-            };
+          if (data.author?.identifier) {
+            console.log("[IG Non-Followers] Found user ID in LD+JSON");
+            return { user_id: data.author.identifier };
           }
         } catch (e) {
           continue;
         }
       }
 
-      const pageData = document.querySelector(
-        'script[type="application/json"]'
+      // Method 5: Try meta tags
+      const metaTags = document.querySelectorAll(
+        'meta[property^="al:ios:url"]'
       );
-      if (pageData) {
-        const data = JSON.parse(pageData.textContent);
-        const userId =
-          data?.require?.[0]?.[3]?.[0]?.__bbox?.require?.[0]?.[3]?.[1]?.__bbox
-            ?.result?.data?.user?.id;
-        if (userId) {
-          return { user_id: userId };
+      for (const meta of metaTags) {
+        const content = meta.getAttribute("content");
+        const match = content?.match(/user_id=(\d+)/);
+        if (match) {
+          console.log("[IG Non-Followers] Found user ID in meta tags");
+          return { user_id: match[1] };
         }
       }
 
       return null;
     } catch (error) {
       console.error("[IG Non-Followers] Error getting Instagram data:", error);
+      return null;
+    }
+  }
+
+  async function getUserIdFromUsername(username) {
+    try {
+      const response = await fetch(
+        `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`,
+        {
+          headers: {
+            "x-ig-app-id": "936619743392459",
+          },
+          credentials: "include",
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.data?.user?.id;
+    } catch (error) {
+      console.error("[IG Non-Followers] Error fetching user ID:", error);
       return null;
     }
   }
@@ -150,8 +196,7 @@
           break;
         }
 
-        // Store users with timestamp information
-        const timestamp = Date.now() - requestCount * 1000; // Approximate based on fetch order
+        const timestamp = Date.now() - requestCount * 1000;
         edge.edges.forEach((item, index) => {
           const user = item.node;
           users.push({
@@ -160,9 +205,8 @@
             profile_pic_url: user.profile_pic_url || "",
             profile_pic_url_hd: user.profile_pic_url || "",
             is_verified: user.is_verified || false,
-            // Approximate follow timestamp - earlier in the list = followed longer ago
             follow_timestamp: timestamp - index * 100,
-            fetch_order: requestCount * 50 + index, // Preserve original fetch order
+            fetch_order: requestCount * 50 + index,
           });
         });
 
@@ -192,13 +236,13 @@
   }
 
   function sendProgress(message, percent) {
-    window.postMessage(
-      {
-        type: "SCAN_PROGRESS",
-        message: message,
-        percent: percent,
-      },
-      "*"
+    window.dispatchEvent(
+      new CustomEvent("IG_SCAN_PROGRESS", {
+        detail: {
+          message: message,
+          percent: percent,
+        },
+      })
     );
   }
 
@@ -208,5 +252,5 @@
 
   runScanner();
 
-  console.log("[IG Non-Followers] Scanner finished");
+  console.log("[IG Non-Followers] Scanner finished initializing");
 })();
